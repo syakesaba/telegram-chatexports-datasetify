@@ -1,5 +1,6 @@
 import asyncio
 import json
+import csv
 from typing import List
 from collections.abc import AsyncGenerator
 
@@ -79,8 +80,22 @@ async def recurse_messsages(
         yield context
 
 
+async def merge_context(
+    chat: Chat, contexts: List[List[Message]]
+) -> AsyncGenerator[List[List[str]], None]:
+    model_id = "user" + str(chat.id)
+    for context in contexts:
+        q = ""
+        a = ""
+        for msg in [message for message in context if message.from_id != model_id]:
+            q += await get_textized_text_entities(msg)
+        for msg in [message for message in context if message.from_id == model_id]:
+            a += await get_textized_text_entities(msg)
+        yield [q, a]
+
+
 async def get_textized_text_entities(message: Message):
-    return " ".join([text_entity.text for text_entity in message.text_entities])
+    return "\n".join([text_entity.text for text_entity in message.text_entities])
 
 
 async def main(file_name: str) -> None:
@@ -96,11 +111,19 @@ async def main(file_name: str) -> None:
     print(f"Text Messages: {len(chat.messages)}", flush=True)
     model_index = await get_index_of_model_chat(chat)
     print(f"Model Messages: {len(model_index)}", flush=True)
-    print(model_index, flush=True)
-    async for context in recurse_messsages(chat=chat, model_index=model_index):
-        print("============")
-        for message in reversed(context):
-            print(message.from_sender, await get_textized_text_entities(message))
+    contexts = reversed(
+        [
+            context
+            async for context in recurse_messsages(chat=chat, model_index=model_index)
+        ]
+    )
+    qa = [qa async for qa in merge_context(chat=chat, contexts=contexts)]
+    with open("output.csv", "w") as f:
+        wf = csv.writer(
+            f,
+        )
+        wf.writerow(["question", "answer"])
+        wf.writerows(qa)
 
 
 if __name__ == "__main__":
