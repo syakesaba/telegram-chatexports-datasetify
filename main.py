@@ -39,7 +39,7 @@ async def recurse_messsages(
 ) -> AsyncGenerator[List[Message], None]:  # AsyncGenerator[YieldType, SendType]
     # model_messageごとにcontextが作成される
     consumed_message_id = []
-    for idx in model_index:
+    for idx in reversed(model_index):
         message = chat.messages[idx]  # answer
         if message.id in consumed_message_id:
             # すでに評価済みのmodel_messageはとばす。
