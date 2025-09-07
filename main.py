@@ -1,14 +1,14 @@
 import asyncio
 import json
 from typing import List
-import duckdb
+from collections.abc import AsyncGenerator
 
 from data_models import Chat, Message
 
 TTL_REPLY = 1  # replies
-TTL_SECONDS = 60 * 60 * 24  # 24 hours
+TTL_SECONDS = 60 * 60 * 12  # hours
 RESULT_JSON_FILE = "result.json"
-MAX_CONTEXT_MESSAGE = 4  # 3 user sends + 1 model answers
+MAX_CONTEXT_MESSAGE = 10  # user sends + 1 model answers
 
 
 async def get_sorted_messages(chat: Chat) -> List[Message]:
@@ -34,14 +34,49 @@ async def get_index_of_model_chat(chat: Chat) -> List[int]:
     ]
 
 
-async def recurse_messsages(chat: Chat, model_index: List[int]) -> List[Message]:
+async def recurse_messsages(
+    chat: Chat, model_index: List[int]
+) -> AsyncGenerator[List[Message], None]:  # AsyncGenerator[YieldType, SendType]
+    # model_messageごとにcontextが作成される
+    consumed_message_id = []
     for idx in model_index:
-        model_message = chat.messages[idx]
-        context = []
-        i = 0
-        message_idx = idx
-        while len(context) < MAX_MESSAGES and message_idx <= 0:
-            chat.messages[idx - i]
+        message = chat.messages[idx]  # answer
+        if message.id in consumed_message_id:
+            # すでに評価済みのmodel_messageはとばす。
+            continue
+        consumed_message_id.append(message.id)
+        context = [
+            message,
+        ]
+        answer_date_unixtime = int(message.date_unixtime)  # UNIX EPOCH (seconds)
+        i = 1
+        is_turned = False
+        while len(context) < MAX_CONTEXT_MESSAGE:
+            # コンテキストが最大メッセージ保有数に達するまでループ
+            next_idx = idx - i
+            if next_idx <= 0:
+                # チャットの最初のメッセージに到達した場合、次のメッセージを取得できないのでcontextは終了
+                break
+            next_message = chat.messages[next_idx]
+            if answer_date_unixtime - int(next_message.date_unixtime) > TTL_SECONDS:
+                # 直前のメッセージが回答よりもかなり前のメッセージの場合、contextは終了
+                break
+            if next_message.from_id == message.from_id:
+                # 直前のメッセージと送信元IDが同じ場合、連続したメッセージとして纏めるためにcontextに連結
+                context.append(next_message)
+                consumed_message_id.append(next_message.id)
+            else:
+                # 直前のメッセージと送信元IDが異なる場合
+                if is_turned:
+                    # ターンが終わったコンテキストなので終了
+                    break
+                # ターンがまだ変わっていないコンテキストはターンを切り替え、次のメッセージへ
+                context.append(next_message)
+                consumed_message_id.append(next_message.id)
+                is_turned = True
+            message = next_message
+            i = i + 1
+        yield context
 
 
 async def get_textized_text_entities(message: Message):
@@ -62,9 +97,10 @@ async def main(file_name: str) -> None:
     model_index = await get_index_of_model_chat(chat)
     print(f"Model Messages: {len(model_index)}", flush=True)
     print(model_index, flush=True)
-    # for message in chat.messages:
-    #     print("============")
-    #     print(await get_textized_text_entities(message))
+    async for context in recurse_messsages(chat=chat, model_index=model_index):
+        print("============")
+        for message in reversed(context):
+            print(message.from_sender, await get_textized_text_entities(message))
 
 
 if __name__ == "__main__":
